@@ -1,6 +1,11 @@
 use std::path::Path;
 use std::{env, fs, path::PathBuf, process::Command};
 
+// On these platforms jemalloc-sys will use a prefixed jemalloc which cannot be linked together
+// with RocksDB.
+// See https://github.com/tikv/jemallocator/blob/tikv-jemalloc-sys-0.5.3/jemalloc-sys/src/env.rs#L25
+const NO_JEMALLOC_TARGETS: &[&str] = &["android", "dragonfly", "musl", "darwin"];
+
 fn link(name: &str, bundled: bool) {
     use std::env::var;
     let target = var("TARGET").unwrap();
@@ -242,18 +247,16 @@ fn build_rocksdb() {
 
     config.define("ROCKSDB_SUPPORT_THREAD_LOCAL", None);
 
-    #[cfg(feature = "jemalloc")]
-    {
-        if target.contains("linux") {
-            pkg_config::probe_library("jemalloc")
-                .expect("The jemalloc feature was requested but jemalloc is not installed");
-            config.define("ROCKSDB_JEMALLOC", Some("1"));
-            config.define("JEMALLOC_NO_DEMANGLE", Some("1"));
-        } else {
-            // this doesn't actually enable jemalloc, but mac/windows needs more
-            // work to make it work (statically link tikv-jemalloc). For now,
-            // I'll keep this as is.
-            config.define("WITH_JEMALLOC", "ON");
+    if cfg!(feature = "jemalloc") && NO_JEMALLOC_TARGETS.iter().all(|i| !target.contains(i)) {
+        config.define("ROCKSDB_JEMALLOC", Some("1"));
+        config.define("JEMALLOC_NO_DEMANGLE", Some("1"));
+        if let Some(jemalloc_root) = env::var_os("DEP_JEMALLOC_ROOT") {
+            let jemalloc_path = Path::new(&jemalloc_root);
+            let lib_path = jemalloc_path.join("lib");
+            let include_path = jemalloc_path.join("include");
+            config.include(include_path);
+            println!("cargo:rustc-link-search=native={}", lib_path.display());
+            println!("cargo:rustc-link-lib=static=jemalloc");
         }
     }
 
